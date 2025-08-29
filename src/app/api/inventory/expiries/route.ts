@@ -1,71 +1,39 @@
-/* eslint-disable prefer-const */
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import { NextResponse } from "next/server";
+import { getAuthz, computeWarehouseScope } from "@/lib/authz";
 
-const warehouses = [ { id: "w1", name: "Central" }, { id: "w2", name: "Norte" } ];
-const locations = [
-  { id: "l1", code: "A1-R1-B1", warehouseId: "w1" },
-  { id: "l2", code: "A1-R1-B2", warehouseId: "w1" },
-  { id: "l3", code: "B2-Z3-B5", warehouseId: "w2" },
-  { id: "l4", code: "STAGING",  warehouseId: "w1" },
-];
-const products = [
-  { id: "p1", sku: "SKU-001", name: "Camisa Oversize Negra", uom: "pz" },
-  { id: "p2", sku: "SKU-014", name: "Pants Gym Esymbel", uom: "pz" },
-  { id: "p3", sku: "SKU-120", name: "Sudadera Zip", uom: "pz" },
-  { id: "p4", sku: "SKU-200", name: "Gorra Logo", uom: "pz" },
-];
-const stock = [
-  { productId: "p1", locationId: "l1", qty: 3, lot: "L-001", expiry: "2025-09-10" },
-  { productId: "p3", locationId: "l3", qty: 7, lot: "L-010", expiry: "2025-09-01" },
-  { productId: "p2", locationId: "l1", qty: 8, lot: null, expiry: null },
-  { productId: "p4", locationId: "l4", qty: 12, lot: null, expiry: null },
+// MOCK
+const lines = [
+  { id: "e1", sku: "SKU-001", name: "Camisa Oversize", lot: "L-001", expiry: "2025-09-15", qty: 12, warehouseId: "A1", location: "A1-R1-B1" },
+  { id: "e2", sku: "SKU-014", name: "Pants Gym",       lot: "L-045", expiry: "2025-10-20", qty: 8,  warehouseId: "A2", location: "A2-Z3-B5" },
+  { id: "e3", sku: "SKU-200", name: "Gorra Logo",       lot: "L-078", expiry: "2025-09-02", qty: 4,  warehouseId: "A1", location: "STAGING" },
 ];
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const wParam = searchParams.get("warehouse");
-  const warehouse = !wParam || wParam === "all" ? "" : wParam;
-  const days = parseInt(searchParams.get("days") || "30", 10);
-  const showExpired = (searchParams.get("expired") || "false").toLowerCase() === "true";
-  const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
-  const pageSize = Math.min(100, Math.max(5, parseInt(searchParams.get("pageSize") || "10", 10)));
+  const requestedWh = searchParams.get("warehouse"); // 'all' | A1 | A2...
+  const horizon = Math.max(1, parseInt(searchParams.get("days") || "30", 10)); // ≤ días
+  const mode = (searchParams.get("mode") || "upcoming") as "upcoming" | "expired";
 
-  const prodBy = new Map(products.map(p => [p.id, p] as const));
-  const locBy  = new Map(locations.map(l => [l.id, l] as const));
-  const whBy   = new Map(warehouses.map(w => [w.id, w] as const));
+  const { roleScope, allowedWarehouses } = await getAuthz();
+  const { filterMany } = computeWarehouseScope(requestedWh, roleScope, allowedWarehouses);
 
-  const now = Date.now();
-  const maxMs = days * 24 * 60 * 60 * 1000;
+  const today = new Date();
 
-  let rows = stock
-    .filter(s => s.expiry)
-    .map(s => {
-      const p = prodBy.get(s.productId)!;
-      const l = locBy.get(s.locationId)!;
-      const w = whBy.get(l.warehouseId)!;
-      const d = s.expiry ? Math.ceil((+new Date(s.expiry) - now) / (1000 * 60 * 60 * 24)) : null;
-      return {
-        sku: p.sku,
-        name: p.name,
-        uom: p.uom,
-        qty: s.qty,
-        lot: s.lot,
-        expiry: s.expiry,
-        daysTo: d,
-        warehouse: w.name,
-        location: l.code,
-        warehouseId: w.id,
-      };
-    })
-    .filter(r => !warehouse || r.warehouseId === warehouse)
-    .filter(r => showExpired ? (r.daysTo !== null && r.daysTo <= 0)
-                             : (r.daysTo !== null && r.daysTo >= 0 && r.daysTo <= days))
-    .sort((a, b) => (a.daysTo ?? Infinity) - (b.daysTo ?? Infinity));
+  let rows = lines.map((r) => {
+    const d = new Date(r.expiry);
+    const days = Math.ceil((+d - +today) / 86400000);
+    return { ...r, daysToExpire: days };
+  });
 
-  const total = rows.length;
-  const start = (page - 1) * pageSize;
-  const paged = rows.slice(start, start + pageSize);
+  // Filtro de warehouse permitido
+  if (filterMany && filterMany.length) {
+    const allow = new Set(filterMany);
+    rows = rows.filter((r) => allow.has(r.warehouseId));
+  }
 
-  return NextResponse.json({ items: paged, total, page, pageSize, warehouses });
+  // Modo caduca pronto / vencido
+  rows = rows.filter((r) => (mode === "upcoming" ? r.daysToExpire >= 0 && r.daysToExpire <= horizon : r.daysToExpire < 0));
+
+  rows.sort((a, b) => a.daysToExpire - b.daysToExpire);
+  return NextResponse.json({ items: rows, total: rows.length, horizon, mode });
 }

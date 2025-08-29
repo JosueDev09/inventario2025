@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/rules-of-hooks */
 "use client";
 import * as React from "react";
+import { WarehouseSwitcher } from "@/components/tenant/warehouse-switcher";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -67,7 +68,19 @@ const NAV_ITEMS: NavItem[] = [
       { label: "Marcas", href: "/products/brands", icon: Tag },
     ],
   },
-  { label: "Analytics", href: "/analytics", icon: BarChart3 },
+ // Agrega bajo "Analytics"
+{
+  label: "Analytics",
+  href: "/analytics",
+  icon: BarChart3,
+  children: [
+    { label: "Overview", href: "/analytics/overview" , icon: BarChart3 },
+    { label: "Inventario", href: "/analytics/inventory", icon: Boxes },
+    { label: "Operación", href: "/analytics/operations", icon: Receipt },
+    { label: "Compras", href: "/analytics/purchasing", icon: ShoppingCart },
+  ],
+},
+
   { label: "Ajustes", href: "/settings", icon: Settings },
 ];
 
@@ -110,8 +123,10 @@ export function Sidebar({
                 >
                   Esymbel WMS
                 </motion.span>
+                
               )}
             </AnimatePresence>
+             
           </div>
 
           <button
@@ -142,6 +157,10 @@ export function Sidebar({
         </nav>
 
         {/* Footer / version */}
+       <div className="p-3 border-t">
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Almacén</div>
+          <WarehouseSwitcher className="w-full" />
+        </div>
         <div className={cn("mt-auto p-3 text-[11px] text-muted-foreground")}>v1.0.0</div>
       </aside>
     </TooltipProvider>

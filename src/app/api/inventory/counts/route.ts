@@ -1,69 +1,67 @@
+/* eslint-disable prefer-const */
 import { NextResponse } from "next/server";
+import { getAuthz, computeWarehouseScope, assertWarehouseAllowed } from "@/lib/authz";
 
-const warehouses = [ { id: "w1", name: "Central" }, { id: "w2", name: "Norte" } ];
-
-type CountStatus = "PLANNED" | "IN_PROGRESS" | "CLOSED";
-type CountRow = {
+// MOCK
+type Count = {
   id: string;
   code: string;
-  status: CountStatus;
+  status: "PLANNED" | "IN_PROGRESS" | "CLOSED";
   warehouseId: string;
-  area: string;
-  scope: string; // By Location / By Product
-  scheduledDate: string; // YYYY-MM-DD
-  createdAt: string; // ISO
-  itemsPlanned: number;
-  itemsCounted: number;
+  area?: string | null;
+  scope: "BY_LOCATION" | "BY_PRODUCT";
+  scheduledAt: string;
+  createdAt: string;
+  planned: number;
+  counted: number;
 };
-
-const counts: CountRow[] = [
-  { id: "c1", code: "CNT-2025-0001", status: "PLANNED",      warehouseId: "w1", area: "A1-R1", scope: "By Location", scheduledDate: "2025-09-05", createdAt: "2025-08-25T10:00:00Z", itemsPlanned: 25, itemsCounted: 0 },
-  { id: "c2", code: "CNT-2025-0002", status: "IN_PROGRESS",  warehouseId: "w1", area: "A1-R2", scope: "By Location", scheduledDate: "2025-09-01", createdAt: "2025-08-26T09:00:00Z", itemsPlanned: 30, itemsCounted: 12 },
-  { id: "c3", code: "CNT-2025-0003", status: "CLOSED",       warehouseId: "w2", area: "B2-Z3", scope: "By Product",  scheduledDate: "2025-08-20", createdAt: "2025-08-18T12:10:00Z", itemsPlanned: 18, itemsCounted: 18 },
+let counts: Count[] = [
+  { id: "c1", code: "CC-001", status: "PLANNED",     warehouseId: "A1", area: "A1-R1", scope: "BY_LOCATION", scheduledAt: "2025-09-05T09:00:00Z", createdAt: "2025-08-20T10:00:00Z", planned: 120, counted: 0 },
+  { id: "c2", code: "CC-002", status: "IN_PROGRESS", warehouseId: "A2", area: "Z3",    scope: "BY_LOCATION", scheduledAt: "2025-09-03T09:00:00Z", createdAt: "2025-08-22T10:00:00Z", planned: 80,  counted: 26 },
+  { id: "c3", code: "CC-003", status: "CLOSED",      warehouseId: "A1", area: null,    scope: "BY_PRODUCT",  scheduledAt: "2025-08-25T09:00:00Z", createdAt: "2025-08-15T10:00:00Z", planned: 60,  counted: 60 },
 ];
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const q = (searchParams.get("q") || "").trim();
-  const wParam = searchParams.get("warehouse");
-  const warehouse = !wParam || wParam === "all" ? "" : wParam;
-  const status = (searchParams.get("status") || "all").toUpperCase(); // all|PLANNED|IN_PROGRESS|CLOSED
-  const dateFrom = searchParams.get("from"); // YYYY-MM-DD
-  const dateTo = searchParams.get("to");     // YYYY-MM-DD
-  const sort = searchParams.get("sort") || "scheduledAsc"; // scheduledAsc|createdDesc|status
-  const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
-  const pageSize = Math.min(100, Math.max(5, parseInt(searchParams.get("pageSize") || "10", 10)));
+  const requestedWh = searchParams.get("warehouse");
+  const status = (searchParams.get("status") || "ALL").toUpperCase();
 
-  const whBy = new Map(warehouses.map(w => [w.id, w] as const));
+  const { roleScope, allowedWarehouses } = await getAuthz();
+  const { filterMany } = computeWarehouseScope(requestedWh, roleScope, allowedWarehouses);
 
-  let rows = counts
-    .filter(c => !warehouse || c.warehouseId === warehouse)
-    .filter(c => status === "ALL" ? true : c.status === status)
-    .map(c => ({
-      ...c,
-      warehouse: whBy.get(c.warehouseId)!.name,
-      progress: c.itemsPlanned > 0 ? Math.round((c.itemsCounted / c.itemsPlanned) * 100) : 0,
-    }));
+  let rows = [...counts];
 
-  if (q) {
-    const fq = q.toLowerCase();
-    rows = rows.filter(r => r.code.toLowerCase().includes(fq) || r.area.toLowerCase().includes(fq) || r.scope.toLowerCase().includes(fq));
+  if (filterMany && filterMany.length) {
+    const allow = new Set(filterMany);
+    rows = rows.filter((r) => allow.has(r.warehouseId));
   }
-  if (dateFrom) rows = rows.filter(r => r.scheduledDate >= dateFrom);
-  if (dateTo)   rows = rows.filter(r => r.scheduledDate <= dateTo);
+  if (status !== "ALL") rows = rows.filter((r) => r.status === status);
 
-  rows.sort((a, b) => {
-    switch (sort) {
-      case "createdDesc": return +new Date(b.createdAt) - +new Date(a.createdAt);
-      case "status": return a.status.localeCompare(b.status);
-      case "scheduledAsc":
-      default: return a.scheduledDate.localeCompare(b.scheduledDate);
-    }
-  });
+  rows.sort((a, b) => +new Date(b.scheduledAt) - +new Date(a.scheduledAt));
+  return NextResponse.json({ items: rows, total: rows.length });
+}
 
-  const total = rows.length;
-  const start = (page - 1) * pageSize;
-  const paged = rows.slice(start, start + pageSize);
-
-  return NextResponse.json({ items: paged, total, page, pageSize, warehouses });
+export async function POST(req: Request) {
+  const body = await req.json();
+  const { roleScope, allowedWarehouses } = await getAuthz();
+  // Validación de almacén permitido en alta
+  assertWarehouseAllowed(body.warehouseId, roleScope, allowedWarehouses);
+  if (!body.code || !body.warehouseId || !body.scope || !body.scheduledAt) {
+    return NextResponse.json({ error: "Faltan campos requeridos" }, { status: 400 });
+  }
+  const id = `c${counts.length + 1}`;
+  const item: Count = {
+    id,
+    code: String(body.code),
+    status: "PLANNED",
+    warehouseId: String(body.warehouseId),
+    area: body.area ?? null,
+    scope: body.scope === "BY_PRODUCT" ? "BY_PRODUCT" : "BY_LOCATION",
+    scheduledAt: String(body.scheduledAt),
+    createdAt: new Date().toISOString(),
+    planned: Number(body.planned ?? 0),
+    counted: 0,
+  };
+  counts.unshift(item);
+  return NextResponse.json({ ok: true, item });
 }
