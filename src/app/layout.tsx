@@ -1,15 +1,13 @@
-// src/app/layout.tsx
 import type { Metadata } from "next";
 import "./globals.css";
 import { Inter } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider/theme-provider";
-import { Sidebar } from "@/components/menu/side-bar/sidebar";
+import AppShell from "@/components/layout/app-shell";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
-
 export const metadata: Metadata = {
-  title: "Esymbel-Inventario",
+  title: "Esymbel WMS",
   description: "WMS + Analytics",
 };
 
@@ -18,10 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="es" suppressHydrationWarning>
       <body className={`${inter.variable} min-h-screen bg-background font-sans antialiased`}>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-          <div className="flex min-h-screen">
-            <Sidebar initialOpen />                   {/* ⬅️ Aquí se pinta el sidebar */}
-            <main className="flex-1 p-4 md:p-6">{children}</main>
-          </div>
+          <AppShell>{children}</AppShell>
         </ThemeProvider>
       </body>
     </html>
