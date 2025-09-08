@@ -1,50 +1,68 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { headers } from "next/headers";
-import bcrypt from "bcryptjs";
+import { db } from '@/lib/db';
+import { NextApiRequest, NextApiResponse } from 'next';
+import { SignJWT } from 'jose';
+import bcrypt from 'bcrypt';
 
-export async function POST(req: Request) {
-  try {
-    const { email, password } = await req.json();
-    if (!email || !password) {
-      return NextResponse.json({ error: "Faltan credenciales" }, { status: 400 });
-    }
 
-    const companyId = Number((await headers()).get("x-company-id"));
-    if (!companyId) return NextResponse.json({ error: "Empresa no resuelta" }, { status: 400 });
 
-    const user = await prisma.user.findUnique({
-      where: { email: String(email).toLowerCase() },
-      include: {
-        companyRoles: { where: { companyId } },
-        warehouseAccess: { include: { warehouse: { select: { id: true, companyId: true } } } },
-      },
-    });
-    if (!user || !user.isActive) return NextResponse.json({ error: "Credenciales inválidas" }, { status: 401 });
+const JWT_SECRET = process.env.AUTH_SECRET || 'secret';
+const getJwtSecret = () => new TextEncoder().encode(JWT_SECRET);
 
-    const ok = await bcrypt.compare(String(password), user.passwordHash);
-    if (!ok) return NextResponse.json({ error: "Credenciales inválidas" }, { status: 401 });
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') return res.status(405).end();
 
-    const hasCompanyRole = user.companyRoles.length > 0;
-    const roleScope = hasCompanyRole ? "COMPANY" : "WAREHOUSE";
-    const warehouseIds = hasCompanyRole
-      ? [] // la UI podrá elegir "Todos"; el backend permite ver todos
-      : user.warehouseAccess.filter((a:any) => a.warehouse.companyId === companyId).map((a:any) => String(a.warehouse.id));
+  const { strUsuario, strContra } = req.body;
 
-    if (roleScope === "WAREHOUSE" && warehouseIds.length === 0) {
-      return NextResponse.json({ error: "Sin almacenes asignados" }, { status: 403 });
-    }
+  
+  // Validar usuario (SP o lógica personalizada)
+  const [spRows]: any = await db.query("CALL sp_ValidarLoginUsuario (?)", [strUsuario]);
+  const user = spRows[0]?.[0];
 
-    return NextResponse.json({
-      ok: true,
-      user: { id: user.id, email: user.email, name: user.name },
-      companyId,
-      roleScope,
-      warehouseIds,
-    });
-  } catch (e) {
-    console.error(e);
-    return NextResponse.json({ error: "Error en login" }, { status: 500 });
+  //console.log("user", user);
+  const isvalidPassword = await bcrypt.compare(strContra, user.strContra);
+  if (!isvalidPassword) {
+    return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+  }
+
+  if (!user) {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+
+  // Datos que firmaremos en el token
+  const payload = {
+    id: user.id,
+    rol: mapRol(user.intRol),
+    username: user.strUsuario,
+    email: user.strCorreo,
+    authType: 'credenciales', // 👈 identificador clave
+  };
+
+  // 🔐 Generar un nuevo token cada vez que inicia sesión
+  const token = await new SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('2h') // Puedes ajustar esto
+    .sign(getJwtSecret());
+
+  // 🧁 Guardar en cookie HttpOnly
+  res.setHeader('Set-Cookie', [
+    `token=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=7200`,
+    `role=${payload.rol}; Path=/; SameSite=Strict; Max-Age=7200`,
+     `username=${encodeURIComponent(payload.username)}; Path=/; SameSite=Strict; Max-Age=7200`,
+  ]);
+  
+  return res.status(200).json({ success: true, token }); 
+}  
+
+
+// Mapea el número a un texto entendible
+function mapRol(intRol: number): string {
+ switch (intRol) {
+    case 1: return "SuperAdmin";
+    case 2: return "Administrador";
+    case 3: return "Paciente";
+    case 4: return "Doctor";
+    default: return "Paciente";
   }
 }

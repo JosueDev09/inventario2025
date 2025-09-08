@@ -1,181 +1,148 @@
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
+// src/app/login/page.tsx
 "use client";
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card/card";
-import { Button } from "@/components/ui/button/button";
-import { Input } from "@/components/ui/input/input";
-import { Label } from "@/components/ui/label/label";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select/select";
-import { Checkbox } from "@/components/ui/checkbox/checkbox";
+import Image from 'next/image'
 
-type Warehouse = { id: string | number; code?: string; name: string };
+
 
 export default function LoginPage() {
   const router = useRouter();
-
-  // Form
-  const [email, setEmail] = React.useState("");
-  const [password, setPassword] = React.useState("");
-  // 'all' = vista empresa (todos los almacenes) | id de almacén
-  const [scope, setScope] = React.useState<string>("all");
-  const [remember, setRemember] = React.useState(true);
-  const [showPassword, setShowPassword] = React.useState(false);
-
-  // Data
-  const [warehouses, setWarehouses] = React.useState<Warehouse[]>([]);
-  const [whLoading, setWhLoading] = React.useState(false);
-
-  // UI
-  const [submitting, setSubmitting] = React.useState(false);
-  const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    (async () => {
-      setWhLoading(true);
-      try {
-        const res = await fetch("/api/tenancy/warehouses", { cache: "no-store" });
-        const j = await res.json();
-        const items: Warehouse[] = Array.isArray(j.items) ? j.items : [];
-        setWarehouses(items);
-        if (items.length > 1) setScope("all");
-        else if (items.length === 1) setScope(String(items[0].id));
-        else setScope("all"); // dev: permite vista empresa aunque no haya datos reales aún
-      } catch {
-        // dev: sin backend, deja "all"
-        setScope("all");
-      } finally {
-        setWhLoading(false);
-      }
-    })();
-  }, []);
+  const [strUsuario, setStrUsuario] = React.useState("");
+  const [strContra, setStrContra] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [show, setShow] = React.useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setErrorMsg(null);
-
-    if (!email.trim() || !password) {
-      setErrorMsg("Completa correo y contraseña.");
-      return;
-    }
-    if (!scope) {
-      setErrorMsg("Selecciona un alcance (todos o un almacén).");
+    setError(null);
+    if (!strUsuario.trim() || !strContra) {
+      setError("Escribe tu usuario y contraseña.");
       return;
     }
 
-    setSubmitting(true);
+    setLoading(true);
     try {
-      // 1) Autentica (si tienes backend). Si no existe, seguirá al fallback.
-      const auth = await fetch("/api/auth/login", {
+      const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ strUsuario: strUsuario.trim(), strContra }),
       });
-
-      const selectedAll = scope === "all";
-      const roleScope = selectedAll ? "COMPANY" : "WAREHOUSE";
-      // Si elegiste "all" y hay n almacenes, pásalos; si no hay, backend interpretará COMPANY sin restricción.
-      const warehouseIds = selectedAll ? warehouses.map((w) => String(w.id)) : [scope];
-
-      // 2) Activa el contexto de sesión (cookies): role + almacenes permitidos
-      if (auth.ok) {
-        await fetch("/api/tenancy/activate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ roleScope, warehouseIds, remember }),
-        });
-      } else {
-        // Fallback demo si aún no tienes /api/auth/login
-        await fetch("/api/tenancy/activate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ roleScope, warehouseIds, remember }),
-        });
+      const json = await res.json().catch(() => ({} as any));
+      if (!res.ok) {
+        setError(json.error || "Credenciales inválidas");
+        return;
       }
 
-      router.push("/dashboard");
+      const { roleScope, warehouseIds } = json as {
+        roleScope: "COMPANY" | "WAREHOUSE";
+        warehouseIds: string[];
+      };
+
+      if (roleScope === "COMPANY") {
+        router.push("/dashboard");
+      } else if (warehouseIds?.length) {
+        router.push(`/dashboard?warehouse=${encodeURIComponent(String(warehouseIds[0]))}`);
+      } else {
+        router.push("/dashboard");
+      }
     } catch {
-      setErrorMsg("No fue posible iniciar sesión. Intenta de nuevo.");
+      setError("No fue posible iniciar sesión. Intenta de nuevo.");
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   }
 
   return (
-    <div className="min-h-[calc(100vh-0px)] grid place-items-center p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-center">Iniciar sesión</CardTitle>
-          <p className="text-sm text-muted-foreground text-center">Esymbel WMS</p>
-        </CardHeader>
-        <CardContent>
-          <form className="grid gap-4" onSubmit={onSubmit}>
+    <div className="min-h-screen grid place-items-center p-4">
+      <div className="w-full max-w-4xl grid md:grid-cols-2 rounded-xl overflow-hidden border bg-background shadow-sm">
+        {/* Columna imagen/GIF decorativo */}
+        <div className="relative hidden md:block bg-muted">
+         <Image
+            src="/hero-wms.svg"
+            width={640}
+            height={360}
+            alt="Imagen decorativa de almacén"
+            className="w-full h-full object-cover select-none pointer-events-none"
+          />
+          <div className="absolute bottom-3 right-3 text-xs text-muted-foreground/80">
+            Esymbel WMS
+          </div>
+        </div>
+
+        {/* Columna formulario (con overlay de loading) */}
+        <div className="relative p-6 md:p-10">
+          {/* 🔸 Overlay de LOADING */}
+          {loading && (
+            <div className="absolute inset-0 z-10 grid place-items-center bg-background/70 backdrop-blur-sm">
+              <div className="grid place-items-center">
+                <Image
+                  src="/assets/login/wms-loading.gif"
+                  width={320}
+                  height={180}
+                  alt="Cargando…"
+                  className="mx-auto select-none pointer-events-none drop-shadow"
+                />
+                <p className="mt-2 text-sm text-muted-foreground tracking-widest">CARGANDO…</p>
+              </div>
+            </div>
+          )}
+
+          <h1 className="text-2xl font-semibold mb-1">Iniciar sesión</h1>
+          <p className="text-sm text-muted-foreground mb-6">Accede a tu almacén</p>
+
+          <form onSubmit={onSubmit} className="grid gap-4">
             <div className="grid gap-1">
-              <Label>Correo</Label>
-              <Input
-                type="email"
-                value={email}
-                onChange={(e:any) => setEmail(e.target.value)}
-                placeholder="tucorreo@empresa.com"
+              <label className="text-sm font-medium">Usuario o correo</label>
+              <input
+                className="border rounded-md px-3 h-10 bg-background"
+                value={strUsuario}
+                onChange={(e) => setStrUsuario(e.target.value)}
+                placeholder="usuario@empresa.com"
                 autoComplete="username"
+                disabled={loading}
               />
             </div>
 
             <div className="grid gap-1">
-              <Label>Contraseña</Label>
+              <label className="text-sm font-medium">Contraseña</label>
               <div className="flex gap-2">
-                <Input
-                  type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e:any) => setPassword(e.target.value)}
+                <input
+                  className="border rounded-md px-3 h-10 flex-1 bg-background"
+                  type={show ? "text" : "password"}
+                  value={strContra}
+                  onChange={(e) => setStrContra(e.target.value)}
                   placeholder="••••••••"
                   autoComplete="current-password"
+                  disabled={loading}
                 />
-                <Button type="button" variant="outline" onClick={() => setShowPassword((s) => !s)}>
-                  {showPassword ? "Ocultar" : "Ver"}
-                </Button>
+                <button
+                  type="button"
+                  className="border rounded-md px-3 h-10 text-sm"
+                  onClick={() => setShow((s) => !s)}
+                  disabled={loading}
+                >
+                  {show ? "Ocultar" : "Ver"}
+                </button>
               </div>
             </div>
 
-            <div className="grid gap-1">
-              <Label>Alcance</Label>
-              <Select value={scope} onValueChange={setScope} disabled={whLoading}>
-                <SelectTrigger>
-                  <SelectValue placeholder={whLoading ? "Cargando..." : "Selecciona..."} />
-                </SelectTrigger>
-                <SelectContent>
-                  {/* Opción empresa (agregado) siempre visible; el backend aplicará enforcement real */}
-                  <SelectItem value="all">Todos los almacenes (vista empresa)</SelectItem>
-                  {warehouses.map((w) => (
-                    <SelectItem key={String(w.id)} value={String(w.id)}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Elige <strong>Todos los almacenes</strong> para ver métricas agregadas en el dashboard.
-              </p>
-            </div>
+            {error && <p className="text-sm text-red-500">{error}</p>}
 
-            <div className="flex items-center gap-2">
-              <Checkbox id="remember" checked={remember} onCheckedChange={(v:any) => setRemember(Boolean(v))} />
-              <Label htmlFor="remember">Recordarme en este dispositivo</Label>
-            </div>
-
-            {errorMsg && <div className="text-sm text-destructive">{errorMsg}</div>}
-
-            <Button type="submit" disabled={submitting || !email || !password || !scope}>
-              {submitting ? "Entrando..." : "Entrar"}
-            </Button>
-
-            <p className="text-xs text-muted-foreground text-center">
-              Al continuar aceptas los términos y políticas de la plataforma.
-            </p>
+            <button
+              type="submit"
+              disabled={loading || !strUsuario || !strContra}
+              className="h-10 rounded-md bg-primary text-primary-foreground disabled:opacity-60"
+            >
+              {loading ? "Entrando..." : "Entrar"}
+            </button>
           </form>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

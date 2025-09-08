@@ -1,85 +1,127 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { jwtVerify, JWTPayload } from "jose";
 
-/**
- * Middleware multi-tenant:
- * - En localhost: fija companyId desde .env (DEV_COMPANY_ID / DEV_TENANT_SLUG).
- * - En prod: (opcional) resuelve por /api/tenancy/resolve?host=... si lo tienes.
- * - Inyecta headers: x-company-id, x-company-slug, x-role-scope, x-allowed-warehouses.
- * - Valida que usuarios de almacén no puedan consultar otros via ?warehouse=.
- */
+// ⚙️ Config
+const AUTH_SECRET = process.env.AUTH_SECRET || "dev-secret";
+const DEV_COMPANY_ID = process.env.DEV_COMPANY_ID || "1";
+
+// Rutas públicas (no requieren sesión)
+const PUBLIC_PATHS = [
+  "/login",
+  "/api/auth/login",
+  "/api/dev",              // tus seeds/dev-tools (borra en prod)
+  "/api/_health",          // endpoint de health opcional
+];
+
+function isPublic(pathname: string) {
+  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) return true;
+  // estáticos de Next
+  if (pathname.startsWith("/_next/")) return true;
+  if (pathname.startsWith("/favicon")) return true;
+  if (pathname.startsWith("/robots.txt") || pathname.startsWith("/sitemap.xml")) return true;
+  return false;
+}
+
+async function verifyToken(token: string): Promise<JWTPayload | null> {
+  try {
+    const secret = new TextEncoder().encode(AUTH_SECRET);
+    const { payload } = await jwtVerify(token, secret); // HS256 por defecto en tu firma
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 export async function middleware(req: NextRequest) {
-  const url = req.nextUrl;
-  const host = req.headers.get("host") || "";
+  const { pathname, searchParams } = req.nextUrl;
 
-  // Evita bucle si llamas a tu propio resolver
-  if (url.pathname.startsWith("/api/tenancy/resolve")) {
+  // 1) Deja pasar rutas públicas
+  if (isPublic(pathname)) {
     return NextResponse.next();
   }
 
-  // 1) Resolver empresa (tenant)
-  let company: { id: string; slug?: string } | null = null;
+  // 2) Resuelve empresa (localhost => .env)
+  const host = req.headers.get("host") || "";
+  const companyId =
+    host.startsWith("localhost") || host.startsWith("127.0.0.1")
+      ? DEV_COMPANY_ID
+      : req.headers.get("x-company-id") || DEV_COMPANY_ID; // si en prod resuelves por dominio, cámbialo aquí
 
-  // a) DEV/localhost: usa .env local
-  if (host.startsWith("localhost") || host.includes("127.0.0.1")) {
-    const id = process.env.DEV_COMPANY_ID || "1";
-    const slug = process.env.DEV_TENANT_SLUG || "dev";
-    company = { id, slug };
-  } else {
-    // b) PROD: intenta resolver por API (si implementaste /api/tenancy/resolve)
-    try {
-      const res = await fetch(`${url.origin}/api/tenancy/resolve?host=${encodeURIComponent(host)}`, {
-        headers: { "x-mw": "1" },
-        cache: "no-store",
-      });
-      if (res.ok) {
-        const json = await res.json();
-        company = json.company ?? null;
-      }
-    } catch {
-      // si no existe el resolver, company quedará null
-    }
-  }
-
-  // Si no tenemos empresa, redirige a /login (o muestra 404 si prefieres)
-  if (!company) {
-    // En localhost no deberías entrar aquí si configuraste DEV_COMPANY_ID
-    return NextResponse.redirect(new URL("/login", url));
-  }
-
-  // 2) Rol/Scope desde cookies (seteadas en login con /api/tenancy/activate)
-  const roleScope = req.cookies.get("roleScope")?.value ?? "COMPANY"; // COMPANY | WAREHOUSE
-  const allowedWarehouses = (req.cookies.get("warehouseIds")?.value ?? "")
+  // 3) Lee cookies de sesión
+  const c = req.cookies;
+  const token = c.get("token")?.value || "";
+  const cookieRoleScope = c.get("roleScope")?.value ?? "";       // COMPANY | WAREHOUSE
+  const cookieAllowed = (c.get("warehouseIds")?.value ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // 3) Validación: usuario WAREHOUSE no puede pedir otros almacenes por query
-  if (roleScope === "WAREHOUSE" && url.searchParams.has("warehouse")) {
-    const w = url.searchParams.get("warehouse");
-    if (w && w !== "all" && !allowedWarehouses.includes(w)) {
-      return NextResponse.json({ error: "Almacén no autorizado" }, { status: 403 });
+  // 4) Requiere sesión
+  if (!token) {
+    return redirectToLogin(req);
+  }
+
+  // 5) Verifica JWT y deriva contexto
+  const payload = await verifyToken(token);
+  if (!payload) {
+    // token inválido/expirado -> limpia y a login
+    const res = redirectToLogin(req);
+    res.cookies.set("token", "", { path: "/", maxAge: 0 });
+    res.cookies.set("roleScope", "", { path: "/", maxAge: 0 });
+    res.cookies.set("warehouseIds", "", { path: "/", maxAge: 0 });
+    return res;
+  }
+
+  // Claims esperados (según tu firma en /api/auth/login)
+  const roleScopeFromToken = (payload.roleScope as string) || "";
+  const warehousesFromToken =
+    (Array.isArray(payload.warehouses) ? payload.warehouses : []) as string[];
+
+  const roleScope = (roleScopeFromToken || cookieRoleScope || "COMPANY") as
+    | "COMPANY"
+    | "WAREHOUSE";
+
+  const allowedWarehouses =
+    warehousesFromToken.length > 0 ? warehousesFromToken : cookieAllowed;
+
+  // 6) Enforcement: si es WAREHOUSE, no permitir ?warehouse= distinto
+  if (roleScope === "WAREHOUSE" && searchParams.has("warehouse")) {
+    const w = searchParams.get("warehouse");
+    if (w && w !== "all" && !allowedWarehouses.includes(String(w))) {
+      // Si es API, responde JSON 403. Si es página, redirige o muestra 403.
+      if (pathname.startsWith("/api/")) {
+        return NextResponse.json({ error: "Almacén no autorizado" }, { status: 403 });
+      }
+      const res = NextResponse.redirect(new URL("/dashboard", req.url));
+      return res;
     }
   }
 
-  // 4) Inyecta contexto a headers (para APIs y Server Components)
+  // 7) Inyecta headers para tus APIs/SSR (company/role/warehouses)
   const requestHeaders = new Headers(req.headers);
-  requestHeaders.set("x-company-id", String(company.id));
-  requestHeaders.set("x-company-slug", String(company.slug || ""));
+  requestHeaders.set("x-company-id", String(companyId));
   requestHeaders.set("x-role-scope", roleScope);
   requestHeaders.set("x-allowed-warehouses", allowedWarehouses.join(","));
 
-  const res = NextResponse.next({ request: { headers: requestHeaders } });
+  // (Opcional) si quieres forzar un warehouse por defecto en páginas cuando WAREHOUSE y no hay query:
+  // if (!pathname.startsWith("/api/") && roleScope === "WAREHOUSE" && !searchParams.get("warehouse") && allowedWarehouses[0]) {
+  //   const url = req.nextUrl.clone();
+  //   url.searchParams.set("warehouse", String(allowedWarehouses[0]));
+  //   return NextResponse.redirect(url);
+  // }
 
-  // 5) (Cómodo) fija cookie companyId si no existe
-  if (!req.cookies.get("companyId")?.value) {
-    res.cookies.set("companyId", String(company.id), { path: "/" });
-  }
-
-  return res;
+  return NextResponse.next({ request: { headers: requestHeaders } });
 }
 
-// Aplica a todo menos assets estáticos
+function redirectToLogin(req: NextRequest) {
+  const url = req.nextUrl.clone();
+  url.pathname = "/login";
+  url.search = ""; // limpia queries
+  return NextResponse.redirect(url);
+}
+
+// Aplica a todo excepto assets estáticos
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)"],
 };
