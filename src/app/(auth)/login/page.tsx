@@ -6,6 +6,8 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import Image from 'next/image'
+import HeroWms from '../../../../public/assets/login/hero.svg'
+import WmsLoading from '../../../../public/assets/login/wms-loading.gif'
 
 
 
@@ -63,9 +65,11 @@ export default function LoginPage() {
         {/* Columna imagen/GIF decorativo */}
         <div className="relative hidden md:block bg-muted">
          <Image
-            src="/hero-wms.svg"
+            src={WmsLoading}
             width={640}
             height={360}
+            loading="lazy"
+            priority={false} 
             alt="Imagen decorativa de almacén"
             className="w-full h-full object-cover select-none pointer-events-none"
           />
@@ -81,10 +85,12 @@ export default function LoginPage() {
             <div className="absolute inset-0 z-10 grid place-items-center bg-background/70 backdrop-blur-sm">
               <div className="grid place-items-center">
                 <Image
-                  src="/assets/login/wms-loading.gif"
+                  src={WmsLoading}
                   width={320}
                   height={180}
                   alt="Cargando…"
+                  loading="lazy"
+                  priority={false} 
                   className="mx-auto select-none pointer-events-none drop-shadow"
                 />
                 <p className="mt-2 text-sm text-muted-foreground tracking-widest">CARGANDO…</p>
